@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Simple Floorplan Editor</title>
+<style>
+  :root{font-family:system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+  body{display:flex;gap:16px;padding:18px;background:#f6f7fb;color:#111}
+  #tools{width:260px}
+  .btn{display:inline-block;padding:8px 10px;margin:6px 4px;border-radius:8px;background:#111;color:#fff;cursor:pointer}
+  .muted{opacity:.7;font-size:13px}
+  canvas{background:#fff;border:1px solid #d6d9e6;border-radius:8px;box-shadow:0 6px 18px rgba(20,20,60,.06)}
+  label{display:block;margin-top:8px}
+  input[type=number]{width:100%}
+</style>
+</head>
+<body>
+  <div id="tools">
+    <h3>Floorplan Editor — minimal</h3>
+    <div class="muted">Tambah kotak sebagai ruangan. Drag untuk geser. Pegang sudut untuk resize.</div>
+    <button id="addRoom" class="btn">+ Tambah Ruangan</button>
+    <button id="exportSVG" class="btn">Export SVG</button>
+    <button id="exportPNG" class="btn">Export PNG</button>
+    <label>Grid (px): <input id="gridSize" type="number" value="10" min="1"></label>
+    <label>Unit scale (px per meter): <input id="scale" type="number" value="50" min="1"></label>
+    <div style="margin-top:12px">
+      <div class="muted">Pilih ruangan: klik. Hapus: tekan Delete.</div>
+    </div>
+  </div>
+
+  <div>
+    <canvas id="c" width="900" height="650"></canvas>
+  </div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const addRoomBtn = document.getElementById('addRoom');
+const exportSVGBtn = document.getElementById('exportSVG');
+const exportPNGBtn = document.getElementById('exportPNG');
+const gridInput = document.getElementById('gridSize');
+const scaleInput = document.getElementById('scale');
+
+let rooms = [];
+let selected = null;
+let dragOffset = {x:0,y:0};
+let dragType = null; // 'move' or 'resize'
+const handleSize = 10;
+
+function snap(v){ const g = Number(gridInput.value)||1; return Math.round(v/g)*g; }
+
+function addRoom(x=50,y=50,w=200,h=150){
+  rooms.push({x,y,w,h,id:Date.now()});
+  draw();
+}
+
+function drawGrid(){
+  const g = Number(gridInput.value)||10;
+  ctx.save();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle = '#eee';
+  ctx.lineWidth = 1;
+  for(let x=0;x<canvas.width;x+=g){
+    ctx.beginPath(); ctx.moveTo(x+0.5,0); ctx.lineTo(x+0.5,canvas.height); ctx.stroke();
+  }
+  for(let y=0;y<canvas.height;y+=g){
+    ctx.beginPath(); ctx.moveTo(0,y+0.5); ctx.lineTo(canvas.width,y+0.5); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function draw(){
+  drawGrid();
+  rooms.forEach(r=>{
+    ctx.save();
+    ctx.fillStyle = '#f9fafc';
+    ctx.strokeStyle = (selected && selected.id===r.id) ? '#111' : '#8b90a6';
+    ctx.lineWidth = (selected && selected.id===r.id) ? 2.5 : 1.5;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeRect(r.x+0.5, r.y+0.5, r.w, r.h);
+    ctx.fillStyle = '#111';
+    ctx.font = '13px system-ui';
+    ctx.fillText(`W:${Math.round(r.w/Number(scaleInput.value||50)*100)/100}m H:${Math.round(r.h/Number(scaleInput.value||50)*100)/100}m`, r.x+8, r.y+18);
+    if(selected && selected.id===r.id){
+      // draw resize handles
+      const hs = handleSize;
+      const hs2 = hs/2;
+      const pts = [
+        [r.x, r.y],
+        [r.x+r.w, r.y],
+        [r.x, r.y+r.h],
+        [r.x+r.w, r.y+r.h]
+      ];
+      ctx.fillStyle = '#111';
+      pts.forEach(p=>ctx.fillRect(p[0]-hs2, p[1]-hs2, hs, hs));
+    }
+    ctx.restore();
+  });
+}
+
+function getHandleAt(r, mx, my){
+  const hs = handleSize/2;
+  const corners = [
+    {x:r.x, y:r.y, name:'tl'},
+    {x:r.x+r.w, y:r.y, name:'tr'},
+    {x:r.x, y:r.y+r.h, name:'bl'},
+    {x:r.x+r.w, y:r.y+r.h, name:'br'}
+  ];
+  for(const c of corners){
+    if(mx >= c.x-hs && mx <= c.x+hs && my >= c.y-hs && my <= c.y+hs) return c.name;
+  }
+  return null;
+}
+
+canvas.addEventListener('mousedown', e=>{
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+  selected = null;
+  for(let i=rooms.length-1;i>=0;i--){
+    const r = rooms[i];
+    if(mx >= r.x && mx <= r.x+r.w && my >= r.y && my <= r.y+r.h){
+      selected = r;
+      const handle = getHandleAt(r, mx, my);
+      if(handle){
+        dragType = 'resize';
+        dragOffset = {handle, startX: mx, startY: my, orig: {...r}};
+      } else {
+        dragType = 'move';
+        dragOffset = {x: mx - r.x, y: my - r.y};
+      }
+      break;
+    }
+  }
+  draw();
+});
+
+canvas.addEventListener('mousemove', e=>{
+  if(!dragType) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+  if(dragType==='move' && selected){
+    selected.x = snap(mx - dragOffset.x);
+    selected.y = snap(my - dragOffset.y);
+  } else if(dragType==='resize' && selected){
+    const h = dragOffset.handle;
+    const o = dragOffset.orig;
+    if(h==='br'){
+      selected.w = Math.max(20, snap(mx - o.x));
+      selected.h = Math.max(20, snap(my - o.y));
+    } else if(h==='tr'){
+      selected.w = Math.max(20, snap(mx - o.x));
+      const newY = snap(my);
+      selected.h = Math.max(20, o.y + o.h - newY);
+      selected.y = newY;
+    } else if(h==='tl'){
+      const newX = snap(mx);
+      const newY = snap(my);
+      selected.w = Math.max(20, o.x + o.w - newX);
+      selected.h = Math.max(20, o.y + o.h - newY);
+      selected.x = newX; selected.y = newY;
+    } else if(h==='bl'){
+      const newX = snap(mx);
+      selected.w = Math.max(20, o.x + o.w - newX);
+      selected.x = newX;
+      selected.h = Math.max(20, snap(my - o.y));
+    }
+  }
+  draw();
+});
+
+window.addEventListener('mouseup', e=>{
+  dragType = null;
+});
+
+canvas.addEventListener('click', e=>{
+  // selection change handled in mousedown; if click empty -> deselect
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX-rect.left, my = e.clientY-rect.top;
+  let hit = false;
+  for(const r of rooms){
+    if(mx >= r.x && mx <= r.x+r.w && my >= r.y && my <= r.y+r.h){ hit = true; break; }
+  }
+  if(!hit) selected = null;
+  draw();
+});
+
+window.addEventListener('keydown', e=>{
+  if(e.key === 'Delete' && selected){
+    rooms = rooms.filter(r=>r.id !== selected.id);
+    selected = null;
+    draw();
+  }
+});
+
+addRoomBtn.onclick = ()=> addRoom(snap(30+Math.random()*200), snap(30+Math.random()*200), snap(180), snap(120));
+
+exportSVGBtn.onclick = ()=>{
+  const svgParts = [];
+  svgParts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}">`);
+  rooms.forEach(r=>{
+    svgParts.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="#f9fafc" stroke="#8b90a6" stroke-width="2"/>`);
+    svgParts.push(`<text x="${r.x+8}" y="${r.y+18}" font-family="system-ui" font-size="14" fill="#111">W:${(r.w/Number(scaleInput.value||50)).toFixed(2)}m H:${(r.h/Number(scaleInput.value||50)).toFixed(2)}m</text>`);
+  });
+  svgParts.push('</svg>');
+  const blob = new Blob([svgParts.join('\n')], {type:'image/svg+xml'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'floorplan.svg'; a.click();
+  URL.revokeObjectURL(url);
+};
+
+exportPNGBtn.onclick = ()=>{
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = 'floorplan.png';
+  a.click();
+};
+
+// initial
+addRoom(60,60,240,160);
+addRoom(320,80,200,140);
+draw();
+</script>
+</body>
+</html>
